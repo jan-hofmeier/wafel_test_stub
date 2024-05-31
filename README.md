@@ -4,7 +4,7 @@ This plugin makes the IOSU-TEST process exit immediately and handles the message
 
 ## How to use
 
-- Copy the `wafel_trampoline_demo.ipx` to `/wiiu/ios_plugins`
+- Copy the `wafel_test_stub.ipx` to `/wiiu/ios_plugins`
 
 ## Building
 
