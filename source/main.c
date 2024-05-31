@@ -8,48 +8,79 @@
 #include <wafel/patch.h>
 #include <wafel/ios/svc.h>
 #include <wafel/trampoline.h>
+#include <wafel/ios/ipc_types.h>
 
-//const char *mydev = "/dev/mlcorig";
-const char *mydev = "/dev/usb01";
-const char *mlc_alt_mount = "/vol/storage_mlc01/sysmlc";
+static u8 threadStack[0x1000] __attribute__((aligned(0x20)));
+static bool ipcNodeKilled = false;
+static u32 messageQueue[0x10];
 
-void print_state(trampoline_state *state){
-    debug_printf("state %p: r0: %p, r1: %p, r2: %p, r3: %p, r4: %p, r5: %p, r6: %p, r7: %p, r8: %p, r9: %p, r10: %p, r11: %p, r12: %p, lr: %p\n", state,
-            state->r[0],state->r[1],state->r[2],state->r[3],state->r[4],state->r[5],state->r[6],state->r[7],state->r[8],state->r[9],state->r[10],state->r[11], state->r[12], state->lr);
-}
+int register_with_pm_stuff(char* node, int queueId){
+    int ret;
+    int pm_handle = ret = iosOpen("/dev/pm", 0);
+    if(pm_handle < 0)
+        return pm_handle;
+    char *inputBuffer = iosAlloc(0xcaff, 0x21);
+    if(!inputBuffer) goto out_close;
+    memset(inputBuffer, 0, 0x21);
+    strncpy(inputBuffer, node, 0x20);
+    ret = iosIoctl(pm_handle, 0xe0, inputBuffer, 0x21, NULL, 0);
+    if(ret < 0) goto out_free;
+    memcpy(inputBuffer, &ret, 4);
+    ret = iosRegisterResourceManager(node, queueId);
+    if(ret) goto out_free;
+    ret = iosIoctl(pm_handle, 0xe1, inputBuffer, 4, NULL, 0);
 
-int mlc_mount_hook(const char* dev, const char *dir, const char *mount_point, void *owner, int (*orgfunc)(const char*, const char*, const char*, void*)){
-    debug_printf("Calling MCP_MountWithSubdir(%s, %s, %s, %p) at %p\n", mydev, dir, mount_point, owner, orgfunc);
-    int ret = orgfunc(mydev, dir, mount_point, owner);
-    debug_printf("MCP_MountWithSubdir returned %X\n", ret);
-
-    debug_printf("Calling MCP_MountWithSubdir(%s, %s, %s, %p) at %p\n", dev, dir, mlc_alt_mount, owner, orgfunc);
-    int res = orgfunc(dev, dir, mlc_alt_mount, owner);
-    debug_printf("MCP_MountWithSubdir returned %X\n", res);
-
+out_free:
+    iosFree(0xcaff, inputBuffer);
+out_close:
+    iosClose(pm_handle);
     return ret;
 }
 
-int wait_for_mlc_hook(const char* dev, u32 timeout, int r2, int r3, int (*orgfunc)(const char*, u32)){
-    int res = orgfunc(dev, timeout);
-    debug_printf("Waiting for %s returned: %d\n", dev, res);
+int receive_loop(int queueId){
+    ipcmessage *message;
+    int res;
+    debug_printf("TESTSTUB: Waiting for Messages\n");
+    while ((res=iosReceiveMessage(queueId, &message, 0)) == 0) {
+        debug_printf("TESTSTUB: /dev/testproc2 received: 0x%x\n", message->command);
 
-    dev = mydev;
-    do{
-        debug_printf("Waiting for %s...\n", dev);
-        res = orgfunc(dev, timeout);
-    } while (res);
+        int res = 0;
+        iosResourceReply(message, res);
+    }
+    debug_printf("TESTSTUB: END\n");
     return res;
 }
 
-void print_thumb_state(trampoline_t_state *state){
-    debug_printf("THUMB state %p: r0: %p, r1: %p, r2: %p, r3: %p, r4: %p, r5: %p, r6: %p, r7: %p, lr: %p\n", state,
-            state->r[0],state->r[1],state->r[2],state->r[3],state->r[4],state->r[5],state->r[6],state->r[7], state->lr);
+u32 ipc_thread(void *) {
+    ipcmessage *message;
+
+    debug_printf("TESTSTUB: create Message Queue\n");
+    int queueId = iosCreateMessageQueue(messageQueue, sizeof(messageQueue) / 4);
+
+
+    debug_printf("TESTSTUB: register Device Node\n");
+    register_with_pm_stuff("/dev/testproc1", queueId);
+    if (register_with_pm_stuff("/dev/testproc2", queueId) == 0) {
+        debug_printf("TESTSTUB: Waiting for Messages\n");
+        while (iosReceiveMessage(queueId, &message, 0) == 0) {
+            debug_printf("TESTSTUB: /dev/testproc2 received: 0x%x\n", message->command);
+
+            int res = 0;
+            iosResourceReply(message, res);
+        }
+    }
+    debug_printf("TESTSTUB: destroy Message Queue\n");
+    iosDestroyMessageQueue(queueId);
+    return 0;
 }
 
-void after_mlc_hook(trampoline_t_state *state){
-    debug_printf("HOOK: MLC MOUNTED!!!!\n");
+
+void print_state(trampoline_state *state){
+    debug_printf("TESTREQUEST %p: r0: %p, r1: %p, r2: %p, r3: %p, r4: %p, r5: %p, r6: %p, r7: %p, r8: %p, r9: %p, r10: %p, r11: %p, r12: %p, lr: %p\n", state,
+            state->r[0],state->r[1],state->r[2],state->r[3],state->r[4],state->r[5],state->r[6],state->r[7],state->r[8],state->r[9],state->r[10],state->r[11], state->r[12], state->lr);
+    state->lr = 0xe4007834;
 }
+
 
 // This fn runs before everything else in kernel mode.
 // It should be used to do extremely early patches
@@ -63,10 +94,30 @@ void kern_main()
 
     debug_printf("init_linking symbol at: %08x\n", wafel_find_symbol("init_linking"));
 
-    trampoline_t_blreplace(0x05027d18, wait_for_mlc_hook);
-    trampoline_t_blreplace(0x05027d54, mlc_mount_hook);
-    //trampoline_t_hook_before(0x05027d58, print_thumb_state);
-    //trampoline_t_hook_before(0x05027d58, after_mlc_hook);
+    //trampoline_hook_before(0xe40077e4, print_state);
+    // ASM_PATCH_K(0xe40077e4, "push {r0-r12, lr}\n"
+    //                         "mov r0, sp\n"
+    //                         "ldr lr, hook_target\n"
+    //                         "blx lr\n"
+    //                         "pop {r0-r12, pc}\n"
+    //                         "hook_target: .word print_state");
+
+    // ASM_PATCH_K(0xe40077ac, "ldr lr, ret_target\n"
+    //                         "ldr pc, hook_target\n"
+    //                         "ret_target: .word 0xe40076c0\n"
+    //                         "hook_target: .word receive_loop");
+
+    // ASM_PATCH_K(0xe4007690, "ldr lr, ret_target\n"
+    //                         "ldr pc, hook_target\n"
+    //                         "ret_target: .word 0xe40076c8\n"
+    //                         "hook_target: .word ipc_thread");
+
+
+    //ASM_PATCH_K(0xe40168a4, "LDR pc, ipc_thread_ptr\nipc_thread_ptr: .word ipc_thread");
+    ASM_PATCH_K(0xe40168a4, "bx lr");
+
+    // U32_PATCH_K(0xe4043ba4, 0x42535342);
+    // U32_PATCH_K(0xe4043bb4, 0x42535342);
 
 }
 
@@ -75,5 +126,9 @@ void kern_main()
 // It must return.
 void mcp_main()
 {
+    int threadId = iosCreateThread(ipc_thread, 0, (u32 *) (threadStack + sizeof(threadStack)), sizeof(threadStack), 0x78, 1);
+    debug_printf("TESTSTUB message threadId: %d\n", threadId);
+    if (threadId >= 0)
+        iosStartThread(threadId);
 
 }
