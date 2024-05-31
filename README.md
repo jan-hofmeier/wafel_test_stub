@@ -1,6 +1,6 @@
-# wafel_trampoline_demo
+# wafel_test_stub
 
-This plugin installs a few different trampolines to call C functions to influence function calls inside IOSU, to print and influence the register state at almost arbitrary locations and to just run something at a specific point in mcpThreadEntry for example
+This plugin makes the IOSU-TEST process exit immediately and handles the messages with a MCP thread 
 
 ## How to use
 
